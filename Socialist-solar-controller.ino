@@ -1,3 +1,9 @@
+/*
+   备注:本控制器主要任务 0.保证自身运行 1.定时浇灌 2.歌颂社会主义
+                          几乎没有电力   少量电力  大量闲余电力
+   按照系统电压为标准        <4.22       >=4.25V    >=4.5
+   程序优先级从低到高
+*/
 /*==================================================
    库文件
   ==================================================== */
@@ -44,9 +50,9 @@ double TWF; //小数发电量
    浇花系统
 */
 #define relay 12 //继电器引脚
-#define WWD 30 //等待浇花延迟 单位秒
-#define WT 30 //浇花时长 单位秒
-byte TB = 0, TBC = 2; //0为晚上 1为早上 2为初始化
+#define WWD 900 //等待浇花延迟 单位秒
+#define WT 20 //浇花时长 单位秒
+byte TB = 0, TBC =   2; //0为晚上 1为早上 2为初始化
 unsigned long TO, WO; //浇花执行时间 以及浇花时间 0为禁用
 /*
    东方红乐音
@@ -116,6 +122,7 @@ void setup()
   lcd.begin(16, 2); //初始化LCD
   pinMode(LCD_BG, OUTPUT); //屏幕背光
   pinMode(relay, OUTPUT); //初始化控制继电器控制引脚
+  digitalWrite(relay, LOW); //防止进入程序后几秒内继电器处于开启状态 耗费电力
   pinMode (BZ, OUTPUT);  //初始化东方红乐音播放引脚
   setup_watchdog(5);  //设置看门狗
   // 0=16ms, 1=32ms,2=64ms,3=128ms,4=250ms,5=500ms
@@ -129,7 +136,71 @@ void setup()
   ==================================================== */
 void loop()
 {
-  if (ST >= 7) {  //注意 看门狗中断被配置为8秒叫一次
+  if (ST >= 7) {  //注意 看门狗中断被配置为8秒叫一次  休眠结束的时间为8*ST
+    SVol = readVcc() / 1000.0; //计算系统电压
+    /*==================================================
+      LCD显示
+      ==================================================== */
+      if (millis() >= SCT + SRI) {
+        lcd.clear();
+        SCT = millis(); //重置计时器
+        switch (SC) {
+          case 0:
+            lcd.setCursor(0, 0);
+            lcd.print(F("TMP: "));
+            lcd.print(float(temp), 2);
+            lcd.print(F(" C"));
+            lcd.setCursor(0, 1);
+            lcd.print(F("RT: "));
+            lcd.print(millis() / 1000);
+            lcd.print(F(" s"));
+            break;
+          case 1:
+            lcd.setCursor(0, 0);
+            lcd.print(F("V: "));
+            lcd.print(float(Vol), 2);
+            lcd.print(F(" "));
+            lcd.print(F("A: "));
+            lcd.print(float(Amp), 2);
+            lcd.setCursor(0, 1);
+            lcd.print(F("W: "));
+            lcd.print(float(W), 2);
+            lcd.print(F("  "));
+            lcd.print(F("U: "));
+            lcd.print(int((W / IC) * 100));
+            lcd.print(F("%"));
+            break;
+          case 2:
+            lcd.setCursor(0, 0);
+            lcd.print(F("Total: "));
+            lcd.print(TW);
+            lcd.setCursor(0, 1);
+            lcd.print(TWF, 15);
+            break;
+          case 3:
+            lcd.setCursor(0, 0);
+            lcd.print(F("SystemVol: "));
+            lcd.print(SVol);
+            break;
+          case 4:
+            lcd.setCursor(0, 0);
+            lcd.print(F("TO: "));
+            lcd.print(TO);
+            lcd.print(F(" TB: "));
+            lcd.print(TB);
+            lcd.setCursor(0, 1);
+            lcd.print(F("WO: "));
+            lcd.print(WO);
+            lcd.print(F(" TBC: "));
+            lcd.print(TBC);
+            /*   lcd.setCursor(0, 0);
+               lcd.print(F("SystemVol: "));
+               lcd.print(SVol);*/
+            break;
+        }
+        SC++;
+        if (SC >= 5) SC = 0;
+      }
     /*==================================================
       NTC温度计算
       ==================================================== */
@@ -143,18 +214,18 @@ void loop()
     /*
        计算基本参数
     */
-    SVol = readVcc() / 1000.0; //计算系统电压
-    Amp = ((NVol) * (analogRead(Apin) / 1023.0) - ((NVol) / 2)) / 0.1;
-    if (Amp < 0) Amp = 0;  //喂：传感器接反了吧 电表倒转啊
+
     Vol = SVol * 5 * (analogRead(Vpin) / 1023.0);
+    if (Vol > 0.15)  Amp = ((NVol) * (analogRead(Apin) / 1023.0) - ((NVol) / 2)) / 0.1;
+    if (Amp < 0) Amp = 0;  //喂：传感器接反了吧 电表倒转啊
     W = Amp * Vol;
     /*
        防止错误的抖动 和 系统背光 以及是否需要休眠
     */
     // SVol = 3.0; //模拟欠压
-    if (Vol <= 0.15) {
+    if (Vol <= 0.15 || SVol < 4.22) {
       Amp = 0; //不符合实际 的电流
-      if (SVol >= 3.5) {
+      if (SVol >= 4.22) {
         digitalWrite(LCD_BG, HIGH); //假若系统有一定的电量
         ST = 100; //重置看门狗计时器
       } else {
@@ -163,8 +234,14 @@ void loop()
         Sleep_avr();  //休眠
       }
     } else {
-      ST = 100; //重置看门狗计时器
-      digitalWrite(LCD_BG, LOW);
+      if (temp <= -35 || temp >= 80) {
+        //过热 进入休眠状态
+        ST = 0; //重置睡眠模式计时器 *必须 不可省略语句
+        Sleep_avr();  //休眠
+      } else {
+        ST = 100; //重置看门狗计时器
+        digitalWrite(LCD_BG, LOW);
+      }
     }
     /*
        计算发电量
@@ -184,15 +261,23 @@ void loop()
     if (Vol < 5) {
       TBC = 0;
       if (TBC != TB) {
+        PSS = 255; //漆黑的夜晚 资本主义的世界
         TB = 0;
         TO = millis() / 1000 + 1;
       }
     } else if (Vol > 15) {
       TBC = 1;
       if (TBC != TB) {
-        PSS = 0; //音乐播放地址为0 东方红开始的位置
-        TB = 1;
-        TO = millis() / 1000 + 1;
+        if (SVol >= 4.25) {
+          //确保系统有足够的能源启动继电器
+          if (SVol >= 4.5) {
+            //确保系统真的有能源歌颂社会主义
+            PSP = 0; //设置播放地址为0  地址0为东方红开始的位置
+            PSS = 0; //启用播放器
+          }
+          TB = 1;
+          TO = millis() / 1000 + 1;
+        }
       }
     }
     /*
@@ -209,64 +294,8 @@ void loop()
       }
     }
     if (WO == 0)  digitalWrite(relay, HIGH);
-    /*==================================================
-      LCD显示
-      ==================================================== */
-    if (millis() >= SCT + SRI) {
-      lcd.clear();
-      SCT = millis(); //重置计时器
-      switch (SC) {
-        case 0:
-          lcd.setCursor(0, 0);
-          lcd.print(F("TMP: "));
-          lcd.print(float(temp), 2);
-          lcd.print(F(" C"));
-          lcd.setCursor(0, 1);
-          lcd.print(F("RT: "));
-          lcd.print(millis() / 1000);
-          lcd.print(F(" s"));
-          break;
-        case 1:
-          lcd.setCursor(0, 0);
-          lcd.print(F("V: "));
-          lcd.print(float(Vol), 2);
-          lcd.print(F(" "));
-          lcd.print(F("A: "));
-          lcd.print(float(Amp), 2);
-          lcd.setCursor(0, 1);
-          lcd.print(F("W: "));
-          lcd.print(float(W), 2);
-          lcd.print(F("  "));
-          lcd.print(F("U: "));
-          lcd.print(int((W / IC) * 100));
-          lcd.print(F("%"));
-          break;
-        case 2:
-          lcd.setCursor(0, 0);
-          lcd.print(F("Total: "));
-          lcd.print(TW);
-          lcd.setCursor(0, 1);
-          lcd.print(TWF, 15);
-          break;
-        case 3:
-          lcd.setCursor(0, 0);
-          lcd.print(F("TO: "));
-          lcd.print(TO);
-          lcd.print(F(" TB: "));
-          lcd.print(TB);
-          lcd.setCursor(0, 1);
-          lcd.print(F("WO: "));
-          lcd.print(WO);
-          lcd.print(F(" TBC: "));
-          lcd.print(TBC);
-          /*   lcd.setCursor(0, 0);
-             lcd.print(F("SystemVol: "));
-             lcd.print(SVol);*/
-          break;
-      }
-      SC++;
-    }
-    if (SC >= 4) SC = 0;
+
+
     /*
        音乐播放器
     */
@@ -333,6 +362,7 @@ void playsound() {
     if (PSS == 0) {  //曲目1 东方红
       if (PSP >= 148) {  //检测到播放位置溢出 重置位置到曲目开头
         PSP = 0;  //设置当前曲目在音符表的开始地址
+        PSS = 255; //停止播放
         PST = millis() / 10.0; //记录开始播放该位置音符的时间
       }
     }
